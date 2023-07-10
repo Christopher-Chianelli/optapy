@@ -20,6 +20,8 @@ import org.optaplanner.jpyinterpreter.types.PythonLikeType;
 import org.optaplanner.jpyinterpreter.types.PythonString;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeDict;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeTuple;
+import org.optaplanner.jpyinterpreter.types.wrappers.JavaObjectWrapper;
+import org.optaplanner.jpyinterpreter.util.TypeHelper;
 import org.optaplanner.jpyinterpreter.util.arguments.ArgumentSpec;
 
 /**
@@ -407,8 +409,9 @@ public class KnownCallImplementor {
         pythonFunctionSignature.getMethodDescriptor().callMethod(methodVisitor);
     }
 
-    public static void callUnpackListAndMap(Class<?> defaultArgumentHolderClass, MethodDescriptor methodDescriptor,
+    public static void callUnpackListAndMap(PythonLikeType type, Class<?> defaultArgumentHolderClass, MethodDescriptor methodDescriptor,
             MethodVisitor methodVisitor) {
+        boolean isJavaClass = type.getJavaClassOrDefault(PythonLikeObject.class).equals(JavaObjectWrapper.class);
         Type[] descriptorParameterTypes = methodDescriptor.getParameterTypes();
 
         // TOS2 is the function to call, TOS1 is positional arguments, TOS is keyword arguments
@@ -479,8 +482,31 @@ public class KnownCallImplementor {
             methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(List.class),
                     "get", Type.getMethodDescriptor(Type.getType(Object.class), Type.INT_TYPE),
                     true);
-            methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, descriptorParameterTypes[i].getInternalName());
-            methodVisitor.visitInsn(Opcodes.SWAP);
+            Type javaParameterType = descriptorParameterTypes[i];
+            if (isJavaClass) {
+                if (!TypeHelper.getBoxedType(javaParameterType).equals(javaParameterType)) {
+                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(PythonLikeObject.class));
+                    Type boxedType = TypeHelper.getBoxedType(javaParameterType);
+                    methodVisitor.visitLdcInsn(boxedType);
+                    methodVisitor.visitInsn(Opcodes.SWAP);
+                    methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(JavaPythonTypeConversionImplementor.class),
+                            "convertPythonObjectToJavaType", Type.getMethodDescriptor(Type.getType(Object.class), Type.getType(Class.class), Type.getType(PythonLikeObject.class)),
+                            false);
+                    TypeHelper.unboxWithCast(methodVisitor, javaParameterType);
+                    if (javaParameterType.equals(Type.LONG_TYPE) || javaParameterType.equals(Type.DOUBLE_TYPE)) {
+                        methodVisitor.visitInsn(Opcodes.DUP2_X1);
+                        methodVisitor.visitInsn(Opcodes.POP2);
+                    } else {
+                        methodVisitor.visitInsn(Opcodes.SWAP);
+                    }
+                } else {
+                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, javaParameterType.getInternalName());
+                    methodVisitor.visitInsn(Opcodes.SWAP);
+                }
+            } else {
+                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, javaParameterType.getInternalName());
+                methodVisitor.visitInsn(Opcodes.SWAP);
+            }
         }
         methodVisitor.visitInsn(Opcodes.POP);
 
@@ -488,6 +514,16 @@ public class KnownCallImplementor {
 
         methodDescriptor.callMethod(methodVisitor);
 
+        if (methodDescriptor.getReturnType().equals(Type.VOID_TYPE)) {
+            methodVisitor.visitInsn(Opcodes.ACONST_NULL);
+        }
+
         // Stack is method, result
+        if (isJavaClass) {
+            TypeHelper.box(methodVisitor, methodDescriptor.getReturnType());
+            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(JavaPythonTypeConversionImplementor.class),
+                    "wrapJavaObject", Type.getMethodDescriptor(Type.getType(PythonLikeObject.class), Type.getType(Object.class)),
+                    false);
+        }
     }
 }

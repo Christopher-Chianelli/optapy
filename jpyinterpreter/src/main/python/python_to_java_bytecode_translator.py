@@ -628,7 +628,7 @@ def unwrap_python_like_builtin_module_object(python_like_object):
     return None
 
 def get_java_type_for_python_type(the_type):
-    from org.optaplanner.jpyinterpreter.types import PythonLikeType
+    from org.optaplanner.jpyinterpreter.types import PythonLikeType, BuiltinTypes
     global type_to_compiled_java_class
 
     if isinstance(the_type, type):
@@ -646,11 +646,11 @@ def get_java_type_for_python_type(the_type):
             maybe_type = globals()[the_type]
             if isinstance(maybe_type, type):
                 return get_java_type_for_python_type(maybe_type)
-            return PythonLikeType.getBaseType()
+            return BuiltinTypes.BASE_TYPE
         except:
-            return PythonLikeType.getBaseType()
+            return BuiltinTypes.BASE_TYPE
     # return base type, since users could use something like 1
-    return PythonLikeType.getBaseType()
+    return BuiltinTypes.BASE_TYPE
 
 
 def get_default_args(func):
@@ -1075,7 +1075,7 @@ def erase_generic_args(python_type):
         raise ValueError
 
 
-def translate_python_class_to_java_class(python_class):
+def translate_python_class_to_java_class(python_class, *java_interfaces):
     from java.lang import Class as JavaClass
     from java.util import ArrayList, HashMap
     from org.optaplanner.jpyinterpreter import PythonCompiledClass, PythonClassTranslator, CPythonBackedPythonInterpreter # noqa
@@ -1211,6 +1211,13 @@ def translate_python_class_to_java_class(python_class):
                                                                       None)
 
     python_compiled_class.superclassList = superclass_list
+    python_compiled_class.javaInterfaceList = ArrayList()
+    for java_interface in java_interfaces:
+        if isinstance(java_interface, str):
+            java_interface = JClass(java_interface)
+        if not isinstance(java_interface, (JClass, JavaClass)):
+            raise ValueError(f'{java_interface} is not a Java Class')
+        python_compiled_class.javaInterfaceList.add(java_interface)
     python_compiled_class.instanceFunctionNameToPythonBytecode = instance_method_map
     python_compiled_class.staticFunctionNameToPythonBytecode = static_method_map
     python_compiled_class.classFunctionNameToPythonBytecode = class_method_map

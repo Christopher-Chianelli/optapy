@@ -83,6 +83,11 @@ public class PythonLikeType implements PythonLikeObject,
         initializer.accept(this);
     }
 
+    public PythonLikeType(String typeName, Class<? extends PythonLikeObject> javaClass, List<PythonLikeType> parents, Consumer<PythonLikeType> initializer) {
+        this(typeName, javaClass, parents);
+        initializer.accept(this);
+    }
+
     private List<PythonLikeType> determineMRO() {
         List<PythonLikeType> out = new ArrayList<>();
         out.add(this);

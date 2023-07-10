@@ -19,6 +19,7 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import org.optaplanner.jpyinterpreter.implementors.JavaPythonTypeConversionImplementor;
 import org.optaplanner.jpyinterpreter.implementors.KnownCallImplementor;
 import org.optaplanner.jpyinterpreter.types.BoundPythonLikeFunction;
 import org.optaplanner.jpyinterpreter.types.BuiltinTypes;
@@ -27,7 +28,10 @@ import org.optaplanner.jpyinterpreter.types.PythonLikeFunction;
 import org.optaplanner.jpyinterpreter.types.PythonLikeType;
 import org.optaplanner.jpyinterpreter.types.PythonString;
 import org.optaplanner.jpyinterpreter.types.errors.TypeError;
+import org.optaplanner.jpyinterpreter.types.wrappers.JavaObjectWrapper;
+import org.optaplanner.jpyinterpreter.util.JavaIdentifierUtils;
 import org.optaplanner.jpyinterpreter.util.MethodVisitorAdapters;
+import org.optaplanner.jpyinterpreter.util.TypeHelper;
 
 public class PythonOverloadImplementor {
     public static Comparator<PythonLikeType> TYPE_DEPTH_COMPARATOR = Comparator.comparingInt(PythonLikeType::getDepth)
@@ -89,8 +93,11 @@ public class PythonOverloadImplementor {
             String methodName,
             PythonKnownFunctionType knownFunctionType,
             PythonClassTranslator.PythonMethodKind methodKind) {
+        String baseClassName = JavaIdentifierUtils.sanitizeClassName(pythonLikeType.getJavaClassOrDefault(PythonLikeObject.class).equals(JavaObjectWrapper.class)?
+          pythonLikeType.getTypeName() :
+          pythonLikeType.getJavaTypeInternalName().replace('/', '.'));
         String maybeClassName = PythonBytecodeToJavaBytecodeTranslator.GENERATED_PACKAGE_BASE
-                + pythonLikeType.getJavaTypeInternalName().replace('/', '.') + "."
+                + baseClassName + "."
                 + methodName + "$$Dispatcher";
         int numberOfInstances =
                 PythonBytecodeToJavaBytecodeTranslator.classNameToSharedInstanceCount.merge(maybeClassName, 1, Integer::sum);
@@ -226,9 +233,24 @@ public class PythonOverloadImplementor {
 
             for (int i = 0; i < argCounts.length; i++) {
                 methodVisitor.visitLabel(argCountLabel[i]);
+                List<PythonFunctionSignature> functionsWithArgCountList = pythonFunctionSignatureByArgumentLength.get(argCounts[i]);
                 createDispatchForArgCount(methodVisitor, argCounts[i], type,
-                        pythonFunctionSignatureByArgumentLength.get(argCounts[i]),
-                        maybeGenericFunctionSignature);
+                        functionsWithArgCountList
+                                .stream()
+                                .filter(signature -> !signature.getMethodDescriptor().getMethodType().isStatic())
+                                .collect(Collectors.toList()),
+                        false);
+                createDispatchForArgCount(methodVisitor, argCounts[i], type,
+                        functionsWithArgCountList
+                                .stream()
+                                .filter(signature -> signature.getMethodDescriptor().getMethodType().isStatic())
+                                .collect(Collectors.toList()),
+                        true);
+                createGenericDispatch(methodVisitor, type, maybeGenericFunctionSignature,
+                        "No overload match the given arguments. Possible overload(s) for " + argCounts[i]
+                                + " arguments are: " +
+                                functionsWithArgCountList.stream().map(PythonFunctionSignature::toString)
+                                        .collect(Collectors.joining(",\n")));
             }
             methodVisitor.visitLabel(defaultCase);
 
@@ -244,8 +266,13 @@ public class PythonOverloadImplementor {
 
     private static void createDispatchForArgCount(MethodVisitor methodVisitor, int argCount,
             PythonLikeType type, List<PythonFunctionSignature> functionSignatureList,
-            Optional<PythonFunctionSignature> maybeGenericDispatch) {
+            boolean isStatic) {
+        if (functionSignatureList.isEmpty()) {
+            return;
+        }
+
         final int MATCHING_OVERLOAD_SET_VARIABLE_INDEX = 3; // 0 = this; 1 = posArguments; 2 = namedArguments
+        boolean isJavaClass = type.getJavaClassOrDefault(PythonLikeObject.class).equals(JavaObjectWrapper.class);
         methodVisitor.visitTypeInsn(Opcodes.NEW, Type.getInternalName(HashSet.class));
         methodVisitor.visitInsn(Opcodes.DUP);
         methodVisitor.visitLdcInsn(functionSignatureList.size());
@@ -263,10 +290,7 @@ public class PythonOverloadImplementor {
         }
         methodVisitor.visitVarInsn(Opcodes.ASTORE, MATCHING_OVERLOAD_SET_VARIABLE_INDEX);
 
-        int startIndex = 0;
-        if (!functionSignatureList.get(0).getMethodDescriptor().getMethodType().isStatic()) {
-            startIndex = 1;
-        }
+        int startIndex = isStatic? 0 : 1;
 
         methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
 
@@ -279,6 +303,19 @@ public class PythonOverloadImplementor {
             methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(List.class), "get",
                     Type.getMethodDescriptor(Type.getType(Object.class), Type.INT_TYPE), true);
 
+            if (isJavaClass) {
+                methodVisitor.visitInsn(Opcodes.DUP);
+                methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, Type.getInternalName(JavaObjectWrapper.class));
+                Label ifNotWrapper = new Label();
+                methodVisitor.visitJumpInsn(Opcodes.IFEQ, ifNotWrapper);
+
+                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(JavaObjectWrapper.class));
+                methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, Type.getInternalName(JavaObjectWrapper.class),
+                        "getWrappedObject", Type.getMethodDescriptor(Type.getType(Object.class)), false);
+
+                methodVisitor.visitLabel(ifNotWrapper);
+            }
+
             SortedMap<PythonLikeType, List<PythonFunctionSignature>> typeToPossibleSignatures =
                     getTypeForParameter(functionSignatureList, i);
 
@@ -286,7 +323,12 @@ public class PythonOverloadImplementor {
             for (PythonLikeType pythonLikeType : typeToPossibleSignatures.keySet()) {
                 Label nextIf = new Label();
                 methodVisitor.visitInsn(Opcodes.DUP);
-                methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, pythonLikeType.getJavaTypeInternalName());
+                if (pythonLikeType.getJavaClassOrDefault(PythonLikeObject.class).equals(JavaObjectWrapper.class)) {
+                    String parameterTypeInternalName = pythonLikeType.getTypeName().replace('.', '/');
+                    methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, parameterTypeInternalName);
+                } else {
+                    methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, pythonLikeType.getJavaTypeInternalName());
+                }
                 methodVisitor.visitJumpInsn(Opcodes.IFEQ, nextIf);
 
                 // pythonLikeType matches argument type
@@ -332,16 +374,8 @@ public class PythonOverloadImplementor {
         methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(Collection.class), "size",
                 Type.getMethodDescriptor(Type.INT_TYPE), true);
 
-        Label setIsNotEmpty = new Label();
-        methodVisitor.visitJumpInsn(Opcodes.IFNE, setIsNotEmpty);
-
-        createGenericDispatch(methodVisitor, type, maybeGenericDispatch,
-                "No overload match the given arguments. Possible overload(s) for " + argCount
-                        + " arguments are: " +
-                        functionSignatureList.stream().map(PythonFunctionSignature::toString)
-                                .collect(Collectors.joining(",\n")));
-
-        methodVisitor.visitLabel(setIsNotEmpty);
+        Label setIsEmpty = new Label();
+        methodVisitor.visitJumpInsn(Opcodes.IFEQ, setIsEmpty);
 
         methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(Iterable.class), "iterator",
                 Type.getMethodDescriptor(Type.getType(Iterator.class)), true);
@@ -362,30 +396,65 @@ public class PythonOverloadImplementor {
         for (int i = 0; i < functionSignatureList.size(); i++) {
             methodVisitor.visitLabel(signatureIndexToDispatch[i]);
             PythonFunctionSignature matchingSignature = functionSignatureList.get(i);
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
 
             if (startIndex != 0) {
-                methodVisitor.visitInsn(Opcodes.DUP);
+                methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
                 methodVisitor.visitLdcInsn(0);
                 methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(List.class), "get",
                         Type.getMethodDescriptor(Type.getType(Object.class), Type.INT_TYPE), true);
 
+                if (isJavaClass) {
+                    methodVisitor.visitInsn(Opcodes.DUP);
+                    methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, Type.getInternalName(JavaObjectWrapper.class));
+                    Label isNotWrappedObject = new Label();
+                    methodVisitor.visitJumpInsn(Opcodes.IFEQ, isNotWrappedObject);
+
+                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST,
+                            Type.getInternalName(JavaObjectWrapper.class));
+                    methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, Type.getInternalName(JavaObjectWrapper.class),
+                            "getWrappedObject", Type.getMethodDescriptor(Type.getType(Object.class)), false);
+
+                    methodVisitor.visitLabel(isNotWrappedObject);
+                }
                 methodVisitor.visitTypeInsn(Opcodes.CHECKCAST,
                         matchingSignature.getMethodDescriptor().getDeclaringClassInternalName());
-                methodVisitor.visitInsn(Opcodes.SWAP);
             }
 
             for (int argIndex = 0; argIndex < argCount; argIndex++) {
                 PythonLikeType parameterType = matchingSignature.getParameterTypes()[argIndex];
-                methodVisitor.visitInsn(Opcodes.DUP);
+                methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
                 methodVisitor.visitLdcInsn(argIndex + startIndex);
                 methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(List.class), "get",
                         Type.getMethodDescriptor(Type.getType(Object.class), Type.INT_TYPE), true);
-                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, parameterType.getJavaTypeInternalName());
-                methodVisitor.visitInsn(Opcodes.SWAP);
+
+                if (isJavaClass) {
+                    Type javaParameterType = matchingSignature.getMethodDescriptor().getParameterTypes()[argIndex];
+                    if (!javaParameterType.getInternalName().equals(parameterType.getJavaTypeInternalName())) {
+                        Type boxedType = TypeHelper.getBoxedType(javaParameterType);
+                        methodVisitor.visitLdcInsn(boxedType);
+                        methodVisitor.visitInsn(Opcodes.SWAP);
+                        methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(JavaPythonTypeConversionImplementor.class),
+                                "convertPythonObjectToJavaType", Type.getMethodDescriptor(Type.getType(Object.class), Type.getType(Class.class), Type.getType(PythonLikeObject.class)),
+                                false);
+                        TypeHelper.unboxWithCast(methodVisitor, javaParameterType);
+                    } else {
+                        methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, parameterType.getJavaTypeInternalName());
+                    }
+                } else {
+                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, parameterType.getJavaTypeInternalName());
+                }
             }
-            methodVisitor.visitInsn(Opcodes.POP);
             matchingSignature.getMethodDescriptor().callMethod(methodVisitor);
+            if (matchingSignature.getReturnType().getTypeName().equals(void.class.getName())) {
+                methodVisitor.visitInsn(Opcodes.ACONST_NULL);
+            }
+
+            if (isJavaClass) {
+                TypeHelper.box(methodVisitor, matchingSignature.getMethodDescriptor().getReturnType());
+                methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(JavaPythonTypeConversionImplementor.class),
+                        "wrapJavaObject", Type.getMethodDescriptor(Type.getType(PythonLikeObject.class), Type.getType(Object.class)),
+                        false);
+            }
             methodVisitor.visitInsn(Opcodes.ARETURN);
         }
 
@@ -397,6 +466,8 @@ public class PythonOverloadImplementor {
                 "<init>", Type.getMethodDescriptor(Type.VOID_TYPE, Type.getType(String.class)),
                 false);
         methodVisitor.visitInsn(Opcodes.ATHROW);
+
+        methodVisitor.visitLabel(setIsEmpty);
     }
 
     private static void createGenericDispatch(MethodVisitor methodVisitor,
@@ -441,6 +512,19 @@ public class PythonOverloadImplementor {
                         "get", Type.getMethodDescriptor(Type.getType(Object.class), Type.INT_TYPE),
                         true);
                 methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(PythonLikeObject.class));
+                if (type.getJavaClassOrDefault(PythonLikeObject.class).equals(JavaObjectWrapper.class)) {
+                    methodVisitor.visitInsn(Opcodes.DUP);
+                    methodVisitor.visitTypeInsn(Opcodes.INSTANCEOF, Type.getInternalName(JavaObjectWrapper.class));
+                    Label isNotWrappedObject = new Label();
+                    methodVisitor.visitJumpInsn(Opcodes.IFEQ, isNotWrappedObject);
+
+                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST,
+                            Type.getInternalName(JavaObjectWrapper.class));
+                    methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, Type.getInternalName(JavaObjectWrapper.class),
+                            "getWrappedObject", Type.getMethodDescriptor(Type.getType(Object.class)), false);
+
+                    methodVisitor.visitLabel(isNotWrappedObject);
+                }
                 methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
                 if (functionSignature.getMethodDescriptor().getMethodType() == MethodDescriptor.MethodType.CLASS) {
                     methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(BoundPythonLikeFunction.class),
@@ -474,7 +558,7 @@ public class PythonOverloadImplementor {
                 methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
             }
             methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
-            KnownCallImplementor.callUnpackListAndMap(functionSignature.getDefaultArgumentHolderClass(),
+            KnownCallImplementor.callUnpackListAndMap(type, functionSignature.getDefaultArgumentHolderClass(),
                     functionSignature.getMethodDescriptor(), methodVisitor);
             methodVisitor.visitInsn(Opcodes.ARETURN);
         }

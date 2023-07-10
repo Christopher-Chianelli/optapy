@@ -23,6 +23,7 @@ import org.optaplanner.jpyinterpreter.types.PythonString;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeDict;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeTuple;
 import org.optaplanner.jpyinterpreter.types.errors.TypeError;
+import org.optaplanner.jpyinterpreter.types.wrappers.JavaObjectWrapper;
 
 public final class ArgumentSpec<Out_> {
     private final Class<Out_> functionReturnType;
@@ -289,7 +290,7 @@ public final class ArgumentSpec<Out_> {
 
         for (int i = 0; i < argumentNameList.size(); i++) {
             if ((out.get(i) == null && !nullableArgumentSet.get(i))
-                    || (out.get(i) != null && !argumentTypeList.get(i).isInstance(out.get(i)))) {
+                    || (out.get(i) != null && !argumentTypeList.get(i).equals(JavaObjectWrapper.class) && !argumentTypeList.get(i).isInstance(out.get(i)))) {
                 throw new TypeError(functionName + "'s argument '" + argumentNameList.get(i) + "' has incorrect type: " +
                         "'" + argumentNameList.get(i) + "' must be a " +
                         JavaPythonTypeConversionImplementor.getPythonLikeType(argumentTypeList.get(i)) +

@@ -5,20 +5,27 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.optaplanner.jpyinterpreter.PythonDefaultArgumentImplementor;
 import org.optaplanner.jpyinterpreter.PythonLikeObject;
+import org.optaplanner.jpyinterpreter.PythonOverloadImplementor;
 import org.optaplanner.jpyinterpreter.implementors.JavaPythonTypeConversionImplementor;
+import org.optaplanner.jpyinterpreter.types.BuiltinTypes;
 import org.optaplanner.jpyinterpreter.types.PythonLikeType;
 import org.optaplanner.jpyinterpreter.types.numeric.PythonInteger;
 
 public class JavaObjectWrapper implements PythonLikeObject, Comparable<JavaObjectWrapper> {
 
     final static Map<Class<?>, PythonLikeType> classToPythonTypeMap = new HashMap<>();
+    final static Set<Class<?>> visitedClassSet = new HashSet<>();
     final static Map<Class<?>, Map<String, List<Member>>> classToAttributeNameToMemberListMap = new HashMap<>();
 
     private final PythonLikeType type;
@@ -28,8 +35,8 @@ public class JavaObjectWrapper implements PythonLikeObject, Comparable<JavaObjec
     private final Map<String, List<Member>> attributeNameToMemberListMap;
 
     private static Stream<Member> getDeclaredMembersStream(Class<?> baseClass) {
-        Stream<Field> fieldStream = Stream.of(baseClass.getDeclaredFields()).filter((field) -> !field.isSynthetic());
-        Stream<Method> methodStream = Stream.of(baseClass.getDeclaredMethods()).filter((method) -> !method.isSynthetic());
+        Stream<Field> fieldStream = Stream.of(baseClass.getDeclaredFields()).filter((field) -> Modifier.isPublic(field.getModifiers()) && !field.isSynthetic());
+        Stream<Method> methodStream = Stream.of(baseClass.getDeclaredMethods()).filter((method) -> Modifier.isPublic(method.getModifiers()) && !method.isSynthetic());
         return Stream.concat(fieldStream, methodStream);
     }
 
@@ -98,16 +105,40 @@ public class JavaObjectWrapper implements PythonLikeObject, Comparable<JavaObjec
     }
 
     public static PythonLikeType getPythonTypeForClass(Class<?> objectClass) {
-        return classToPythonTypeMap.computeIfAbsent(objectClass, JavaObjectWrapper::generatePythonTypeForClass);
+        if (!visitedClassSet.contains(objectClass)) {
+            visitedClassSet.add(objectClass);
+            PythonLikeType generatedType = generatePythonTypeForClass(objectClass);
+            return generatedType;
+        } else {
+            return classToPythonTypeMap.get(objectClass);
+        }
     }
 
     private static PythonLikeType generatePythonTypeForClass(Class<?> objectClass) {
-        PythonLikeType out = new PythonLikeType(objectClass.getName(), JavaObjectWrapper.class);
-        getDeclaredMembersStream(objectClass)
-                .filter(member -> member instanceof Method)
-                .forEach(member -> {
-                    out.__dir__.put(member.getName(), new JavaMethodReference((Method) member, Map.of()));
+        List<PythonLikeType> parentTypeList = new ArrayList<>();
+        PythonLikeType out = new PythonLikeType(objectClass.getName(), JavaObjectWrapper.class, parentTypeList, type -> {
+            classToPythonTypeMap.put(objectClass, type);
+        });
+        if (objectClass.getSuperclass() != null) {
+            parentTypeList.add(getPythonTypeForClass(objectClass.getSuperclass()));
+        }
+        for (Class<?> implementedInterface : objectClass.getInterfaces()) {
+            parentTypeList.add(getPythonTypeForClass(implementedInterface));
+        }
+        if (parentTypeList.isEmpty()) {
+            parentTypeList.add(BuiltinTypes.BASE_TYPE);
+        }
+        Stream.of(objectClass.getMethods())
+                .collect(Collectors.groupingBy(Member::getName,
+                        Collectors.mapping(
+                                member -> member,
+                                Collectors.toList())))
+                .forEach((methodName, methods) -> {
+                    for (Method method : methods) {
+                        out.addMethod(methodName, method);
+                    }
                 });
+        PythonOverloadImplementor.createDispatchesFor(out);
         return out;
     }
 

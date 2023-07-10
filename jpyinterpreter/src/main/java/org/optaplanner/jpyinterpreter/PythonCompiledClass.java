@@ -33,6 +33,7 @@ public class PythonCompiledClass {
      */
     public PythonLikeType binaryType;
     public List<PythonLikeType> superclassList;
+    public List<Class<?>> javaInterfaceList = List.of();
     public Map<String, PythonCompiledFunction> instanceFunctionNameToPythonBytecode;
     public Map<String, PythonCompiledFunction> staticFunctionNameToPythonBytecode;
     public Map<String, PythonCompiledFunction> classFunctionNameToPythonBytecode;

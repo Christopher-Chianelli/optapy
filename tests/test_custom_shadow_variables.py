@@ -56,6 +56,12 @@ def test_custom_shadow_variable():
         def set_value_squared(self, new_value_squared):
             self.value_squared = new_value_squared
 
+        def __str__(self):
+            return f'Entity[value={self.value}, squared={self.value_squared}]'
+
+        def __repr__(self):
+            return str(self)
+
     @optapy.constraint_provider
     def my_constraints(constraint_factory: optapy.constraint.ConstraintFactory):
         return [
@@ -96,6 +102,9 @@ def test_custom_shadow_variable():
 
         def set_score(self, score):
             self.score = score
+
+        def __str__(self):
+            return f'MySolution[entities={str(self.entity_list)}]'
 
     solver_config = optapy.config.solver.SolverConfig() \
         .withSolutionClass(MySolution) \
@@ -231,3 +240,146 @@ def test_custom_shadow_variable_with_variable_listener_ref():
     assert solution.score.getScore() == 1
     assert solution.entity_list[0].value == 2
     assert solution.entity_list[0].value_squared == 4
+
+
+def test_custom_shadow_variable_with_variable_listener_ref_across_entities():
+    @optapy.variable_listener
+    class MyVariableListener:
+        def afterVariableChanged(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            shadow_entity = score_director.getWorkingSolution().shadow_entity
+            score_director.beforeVariableChanged(shadow_entity, 'twice_value')
+            score_director.beforeVariableChanged(entity, 'value_squared')
+            if entity.value is None:
+                shadow_entity.twice_value = None
+                entity.value_squared = None
+            else:
+                shadow_entity.twice_value = 2 * entity.value
+                entity.value_squared = entity.value ** 2
+            score_director.afterVariableChanged(entity, 'value_squared')
+            score_director.afterVariableChanged(shadow_entity, 'twice_value')
+
+        def beforeVariableChanged(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            pass
+
+        def beforeEntityAdded(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            pass
+
+        def afterEntityAdded(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            pass
+
+        def beforeEntityRemoved(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            pass
+
+        def afterEntityRemoved(self, score_director: ScoreDirector, entity: 'MyPlanningEntity'):
+            pass
+
+    @optapy.planning_entity
+    class MyPlanningEntity:
+        value: Optional[int]
+        value_squared: Optional[int]
+        shadow: 'MyShadowEntity'
+
+        def __init__(self):
+            self.value = None
+            self.value_squared = None
+            self.twice_value = None
+            self.shadow = None
+
+        @optapy.planning_variable(int, value_range_provider_refs=['value_range'])
+        def get_value(self):
+            return self.value
+
+        def set_value(self, new_value):
+            self.value = new_value
+
+        @optapy.custom_shadow_variable(int, variable_listener_class=MyVariableListener,
+                                       sources=[optapy.planning_variable_reference('value')])
+        def get_value_squared(self):
+            return self.value_squared
+
+        def set_value_squared(self, new_value_squared):
+            self.value_squared = new_value_squared
+
+    @optapy.planning_entity
+    class MyShadowEntity:
+        twice_value: Optional[int]
+
+        def __init__(self):
+            self.twice_value = None
+
+        @optapy.custom_shadow_variable(int, variable_listener_ref=optapy.planning_variable_reference(entity_class=MyPlanningEntity,
+                                                                                                     variable_name='value_squared'))
+        def get_twice_value(self):
+            return self.twice_value
+
+        def set_twice_value(self, twice_value):
+            self.twice_value = twice_value
+
+    @optapy.constraint_provider
+    def my_constraints(constraint_factory: optapy.constraint.ConstraintFactory):
+        return [
+            constraint_factory.for_each(MyPlanningEntity)
+            .join(MyShadowEntity)
+            .filter(lambda entity, shadow: shadow.twice_value == entity.value_squared)
+            .reward('Double value is value squared', optapy.score.SimpleScore.ONE)
+        ]
+
+    @optapy.planning_solution
+    class MySolution:
+        entity: MyPlanningEntity
+        shadow_entity: MyShadowEntity
+        value_list: list[int]
+        score: optapy.score.SimpleScore
+
+        def __init__(self, entity, shadow_entity, value_list, score=None):
+            self.entity = entity
+            self.shadow_entity = shadow_entity
+            self.value_list = value_list
+            self.score = score
+
+        @optapy.planning_entity_property(MyPlanningEntity)
+        def get_entity(self):
+            return self.entity
+
+        def set_entity(self, entity):
+            self.entity = entity
+
+        @optapy.planning_entity_property(MyShadowEntity)
+        def get_shadow_entity(self):
+            return self.shadow_entity
+
+        def set_shadow_entity(self, shadow_entity):
+            self.shadow_entity = shadow_entity
+
+        @optapy.problem_fact_collection_property(int)
+        @optapy.value_range_provider('value_range')
+        def get_value_list(self):
+            return self.value_list
+
+        def set_value_list(self, value_list):
+            self.value_list = value_list
+
+        @optapy.planning_score(optapy.score.SimpleScore)
+        def get_score(self):
+            return self.score
+
+        def set_score(self, score):
+            self.score = score
+
+    solver_config = optapy.config.solver.SolverConfig() \
+        .withSolutionClass(MySolution) \
+        .withEntityClasses(MyPlanningEntity, MyShadowEntity) \
+        .withConstraintProviderClass(my_constraints) \
+        .withTerminationConfig(optapy.config.solver.termination.TerminationConfig()
+                               .withBestScoreLimit('1'))
+
+    solver_factory = optapy.solver_factory_create(solver_config)
+    solver = solver_factory.buildSolver()
+    entity = MyPlanningEntity()
+    entity.shadow = MyShadowEntity()
+    problem = MySolution(entity, entity.shadow, [1, 2, 3])
+    solution: MySolution = solver.solve(problem)
+    assert solution.score.getScore() == 1
+    assert solution.entity.value == 2
+    assert solution.entity.value_squared == 4
+    assert solution.shadow_entity.twice_value == 4

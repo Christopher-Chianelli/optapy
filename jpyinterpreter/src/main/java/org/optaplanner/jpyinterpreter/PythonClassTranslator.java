@@ -25,6 +25,7 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.optaplanner.jpyinterpreter.dag.FlowGraph;
+import org.optaplanner.jpyinterpreter.implementors.InterfaceDelegateImplementor;
 import org.optaplanner.jpyinterpreter.implementors.JavaComparableImplementor;
 import org.optaplanner.jpyinterpreter.implementors.JavaEqualsImplementor;
 import org.optaplanner.jpyinterpreter.implementors.JavaHashCodeImplementor;
@@ -90,6 +91,10 @@ public class PythonClassTranslator {
                             .add(new JavaComparableImplementor(internalClassName, instanceMethodEntry.getKey()));
                     break;
             }
+        }
+
+        for (Class<?> javaInterface : pythonCompiledClass.javaInterfaceList) {
+            javaInterfaceImplementorSet.add(new InterfaceDelegateImplementor(javaInterface, internalClassName));
         }
 
         if (pythonCompiledClass.superclassList.isEmpty()) {
@@ -1245,6 +1250,10 @@ public class PythonClassTranslator {
         public InterfaceDeclaration(String interfaceName, String methodDescriptor) {
             this.interfaceName = interfaceName;
             this.methodDescriptor = methodDescriptor;
+        }
+
+        public String getMethodDescriptor() {
+            return methodDescriptor;
         }
 
         @Override

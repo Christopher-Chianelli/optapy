@@ -21,6 +21,8 @@ import org.optaplanner.jpyinterpreter.types.PythonString;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeDict;
 import org.optaplanner.jpyinterpreter.types.collections.PythonLikeTuple;
 import org.optaplanner.jpyinterpreter.types.errors.TypeError;
+import org.optaplanner.jpyinterpreter.util.MethodVisitorAdapters;
+import org.optaplanner.jpyinterpreter.util.TypeHelper;
 import org.optaplanner.jpyinterpreter.util.arguments.ArgumentSpec;
 
 /**
@@ -250,10 +252,11 @@ public class PythonDefaultArgumentImplementor {
             Map<String, Integer> argumentNameToIndexMap, Optional<Integer> extraPositionalArgumentsVariableIndex,
             Optional<Integer> extraKeywordArgumentsVariableIndex,
             ArgumentSpec<?> argumentSpec) {
-        MethodVisitor methodVisitor = classVisitor.visitMethod(Modifier.PUBLIC, "addArgument",
+        MethodVisitor methodVisitor = MethodVisitorAdapters.adapt(classVisitor.visitMethod(Modifier.PUBLIC, "addArgument",
                 Type.getMethodDescriptor(Type.VOID_TYPE,
                         Type.getType(PythonLikeObject.class)),
-                null, null);
+                null, null), "addArgument", Type.getMethodDescriptor(Type.VOID_TYPE,
+                Type.getType(PythonLikeObject.class)));
 
         methodVisitor.visitParameter("argument", 0);
 
@@ -293,7 +296,7 @@ public class PythonDefaultArgumentImplementor {
                     Type parameterType = methodDescriptor.getParameterTypes()[index];
                     methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
                     methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
-                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, parameterType.getInternalName());
+                    TypeHelper.unboxWithCast(methodVisitor, parameterType);
                     methodVisitor.visitFieldInsn(Opcodes.PUTFIELD, classInternalName, getArgumentName(index),
                             parameterType.getDescriptor());
                 },
@@ -392,7 +395,7 @@ public class PythonDefaultArgumentImplementor {
                     Type parameterType = methodDescriptor.getParameterTypes()[index];
                     methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
                     methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
-                    methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, parameterType.getInternalName());
+                    TypeHelper.unboxWithCast(methodVisitor, parameterType);
                     methodVisitor.visitFieldInsn(Opcodes.PUTFIELD, classInternalName, getArgumentName(index),
                             parameterType.getDescriptor());
                 },
@@ -442,7 +445,7 @@ public class PythonDefaultArgumentImplementor {
 
         methodVisitor.visitInsn(Opcodes.RETURN);
 
-        methodVisitor.visitMaxs(-1, -1);
+        methodVisitor.visitMaxs(0, 0);
         methodVisitor.visitEnd();
     }
 

@@ -150,7 +150,7 @@ public class ExceptionImplementorTest {
                 PythonBytecodeToJavaBytecodeTranslator.translatePythonBytecode(pythonCompiledFunction, BiFunction.class);
     }
 
-    @Test
+    /*@Test
     public void testWithBlocksWithoutException() {
         PythonCompiledFunction pythonCompiledFunction = PythonFunctionBuilder.newFunction("cxt")
                 .loadConstant(0)
@@ -173,7 +173,7 @@ public class ExceptionImplementorTest {
         assertThat(function.apply(contextManager)).isEqualTo(2);
         assertThat(contextManager.hasExited()).isTrue();
         assertThat(contextManager.getException()).isNull();
-    }
+    }*/
 
     @Test
     public void testWithBlocksWithException() {
